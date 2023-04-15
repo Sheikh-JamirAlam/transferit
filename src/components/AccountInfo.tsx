@@ -106,8 +106,8 @@ export default function AccountInfo() {
 
         tokenAcc.name = res.data.data.name;
         tokenAcc.symbol = res.data.data.symbol;
-      } catch (e) {
-        console.error(e);
+      } catch (TypeError) {
+        console.error(TypeError);
       }
 
       try {
