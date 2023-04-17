@@ -1,7 +1,8 @@
 import { useConnection, useWallet } from "@solana/wallet-adapter-react";
-import { PublicKey, Connection, LAMPORTS_PER_SOL } from "@solana/web3.js";
-import { TOKEN_PROGRAM_ID } from "@solana/spl-token";
+import { PublicKey, Connection, LAMPORTS_PER_SOL, Keypair, Transaction } from "@solana/web3.js";
+import { TOKEN_PROGRAM_ID, getOrCreateAssociatedTokenAccount, createTransferInstruction, TokenAccountNotFoundError } from "@solana/spl-token";
 import { ENV, Strategy, TokenInfo, TokenListProvider } from "@solana/spl-token-registry";
+import { WalletSendTransactionError } from '@solana/wallet-adapter-base';
 import { Metadata } from "@metaplex-foundation/mpl-token-metadata";
 import { useEffect, useState } from "react";
 
@@ -24,9 +25,15 @@ export default function AccountInfo() {
   const [tokenMap, setTokenMap] = useState<Map<string, TokenInfo>>(new Map());
   const [tokenAccounts, setTokenAccounts] = useState<TokenAccount[]>([]);
   const [selectedAcc, setSelectedAcc] = useState<TokenAccount>(tokenAccInitialState);
+  const [transferAmount, setTransferAmount] = useState(0);
+  const [receiverAddress, setReceiverAddress] = useState("");
+  const [isValidAmount, setIsValidAmount] = useState(true);
+  const [isValidAddress, setIsValidAddress] = useState(true);
+  const [explorerLink, setExplorerLink] = useState("");
+  const [transferStatus, setTransferStatus] = useState(false);
 
   const { connection } = useConnection();
-  const { publicKey } = useWallet();
+  const { publicKey, sendTransaction } = useWallet();
 
   useEffect(() => {
     setTokenAccounts([]);
@@ -124,17 +131,64 @@ export default function AccountInfo() {
     });
   }
 
+  function validateAccount(receiverAddress: string) {
+    try {
+      const publicKey = new PublicKey(receiverAddress);
+      const isValid = PublicKey.isOnCurve(publicKey);
+      setIsValidAddress(isValid);
+      return isValid;
+    } catch (e) {
+      setIsValidAddress(false);
+      return false;
+    }
+  }
+
+  async function handleTransfer() {
+    transferAmount > selectedAcc.balance && setIsValidAmount(false);
+    try {
+      if (validateAccount(receiverAddress)) {
+        if (selectedAcc.name === "Solana") {
+        }
+        const destWallet = new PublicKey(receiverAddress);
+        const fromWallet = Keypair.generate();
+        const mint = new PublicKey(selectedAcc.mint ?? "");
+        const sourceAccount = await getOrCreateAssociatedTokenAccount(connection, fromWallet, mint, publicKey!!);
+
+        try {
+          const destinationAccount = await getOrCreateAssociatedTokenAccount(connection, fromWallet, mint, destWallet);
+          const transaction = new Transaction();
+          transaction.add(createTransferInstruction(sourceAccount.address, destinationAccount.address, publicKey!!, transferAmount * Math.pow(10, selectedAcc.decimalPlaces ?? 0)));
+          await sendTransaction(transaction, connection).then((data) => {
+            getTokensInWallet(publicKey!!.toString(), connection);
+            setExplorerLink(`https://explorer.solana.com/tx/${data}?cluster=devnet`);
+            console.log(explorerLink);
+            setTransferStatus(true);
+          });
+          setSelectedAcc(tokenAccInitialState);
+        } catch (err) {
+          if (err instanceof TokenAccountNotFoundError) {
+            console.log("from TokenAccountNotFoundError");
+          }
+        }
+      }
+    } catch(err) {
+      if (err instanceof WalletSendTransactionError) {
+        console.log("Transaction failed");
+      }
+    }
+  }
+
   return (
     <div className="h-screen bg-background flex flex-col pt-24 items-center">
       <p className="text-highlight text-2xl">Transfer tokens fast and secure.</p>
-      <form className="mt-12">
+      <form className="flex flex-col mt-12">
         <div className="grid mb-3">
           <label htmlFor="tokenSelect" className="text-teal-50 mb-2">
             Select Token:
           </label>
           <select
             name="tokenSelect"
-            className="w-80 h-8 rounded outline-background"
+            className="w-80 h-10 pl-[0.3rem] rounded outline-background"
             value={JSON.stringify(selectedAcc)}
             onChange={(e) => {
               console.log(selectedAcc);
@@ -154,6 +208,46 @@ export default function AccountInfo() {
         <p className="text-teal-50 mb-3">
           Available Balance: {selectedAcc.balance ? `${selectedAcc.balance}` : "0"} {selectedAcc.symbol && `${selectedAcc.symbol}`}
         </p>
+        <div className="grid mb-3">
+          <label htmlFor="amountSelect" className="text-teal-50 mb-2">
+            Enter Amount:
+          </label>
+          <input
+            type="number"
+            name="amountSelect"
+            className="w-80 h-10 pl-[0.6rem] rounded outline-background"
+            value={transferAmount}
+            onChange={(e) => {
+              setIsValidAmount(true);
+              setTransferAmount(parseInt(e.target.value));
+            }}
+          />
+        </div>
+        <div className="grid mb-3">
+          <label htmlFor="amountSelect" className="text-teal-50 mb-2">
+            Enter Receiver Address:
+          </label>
+          <input
+            type="text"
+            name="amountSelect"
+            className="w-80 h-10 pl-[0.6rem] rounded outline-background"
+            placeholder="Receiver Address"
+            value={receiverAddress}
+            onChange={(e) => {
+              setReceiverAddress(e.target.value);
+            }}
+          />
+        </div>
+        <button
+          type="button"
+          className="w-80 h-10 mt-2 rounded border transition-all hover:bg-highlighthover hover:border-highlightdarker border-transparent text-navtext bg-highlight"
+          onClick={(e) => {
+            e.preventDefault();
+            handleTransfer();
+          }}
+        >
+          Transfer
+        </button>
       </form>
     </div>
   );
