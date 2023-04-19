@@ -1,10 +1,20 @@
 import { useConnection, useWallet } from "@solana/wallet-adapter-react";
-import { PublicKey, Connection, LAMPORTS_PER_SOL, Keypair, Transaction } from "@solana/web3.js";
-import { TOKEN_PROGRAM_ID, getOrCreateAssociatedTokenAccount, createTransferInstruction, TokenAccountNotFoundError } from "@solana/spl-token";
+import { PublicKey, Connection, LAMPORTS_PER_SOL, Keypair, Transaction, SystemProgram } from "@solana/web3.js";
+import {
+  TOKEN_PROGRAM_ID,
+  getOrCreateAssociatedTokenAccount,
+  createTransferInstruction,
+  TokenAccountNotFoundError,
+  getAssociatedTokenAddress,
+  createAssociatedTokenAccountInstruction,
+} from "@solana/spl-token";
 import { ENV, Strategy, TokenInfo, TokenListProvider } from "@solana/spl-token-registry";
-import { WalletSendTransactionError } from '@solana/wallet-adapter-base';
+import { WalletSendTransactionError } from "@solana/wallet-adapter-base";
 import { Metadata } from "@metaplex-foundation/mpl-token-metadata";
 import { useEffect, useState } from "react";
+import TokenAccCreateModal from "./TokenAccCreateModal";
+import TokenTransferModal from "./TokenTransferModal";
+import TransferSuccess from "./TransferSuccess";
 
 interface TokenAccount {
   owner: string;
@@ -31,6 +41,8 @@ export default function AccountInfo() {
   const [isValidAddress, setIsValidAddress] = useState(true);
   const [explorerLink, setExplorerLink] = useState("");
   const [transferStatus, setTransferStatus] = useState(false);
+  const [ataStatus, setAtaStatus] = useState("NOT_INITIALIZED");
+  const [isLoading, setIsLoading] = useState(false);
 
   const { connection } = useConnection();
   const { publicKey, sendTransaction } = useWallet();
@@ -144,42 +156,98 @@ export default function AccountInfo() {
   }
 
   async function handleTransfer() {
+    if (!publicKey) {
+      alert("Please Connect to a wallet");
+      return;
+    }
+    if (!selectedAcc.mint) {
+      alert("Please Select a token to transfer");
+    }
     transferAmount > selectedAcc.balance && setIsValidAmount(false);
-    try {
-      if (validateAccount(receiverAddress)) {
-        if (selectedAcc.name === "Solana") {
-        }
-        const destWallet = new PublicKey(receiverAddress);
-        const fromWallet = Keypair.generate();
-        const mint = new PublicKey(selectedAcc.mint ?? "");
-        const sourceAccount = await getOrCreateAssociatedTokenAccount(connection, fromWallet, mint, publicKey!!);
-
-        try {
-          const destinationAccount = await getOrCreateAssociatedTokenAccount(connection, fromWallet, mint, destWallet);
-          const transaction = new Transaction();
-          transaction.add(createTransferInstruction(sourceAccount.address, destinationAccount.address, publicKey!!, transferAmount * Math.pow(10, selectedAcc.decimalPlaces ?? 0)));
-          await sendTransaction(transaction, connection).then((data) => {
-            getTokensInWallet(publicKey!!.toString(), connection);
-            setExplorerLink(`https://explorer.solana.com/tx/${data}?cluster=devnet`);
-            console.log(explorerLink);
-            setTransferStatus(true);
-          });
-          setSelectedAcc(tokenAccInitialState);
-        } catch (err) {
-          if (err instanceof TokenAccountNotFoundError) {
-            console.log("from TokenAccountNotFoundError");
+    if (transferAmount <= selectedAcc.balance) {
+      try {
+        if (validateAccount(receiverAddress)) {
+          setIsLoading(true);
+          if (selectedAcc.name === "Solana") {
+            const receiver = new PublicKey(receiverAddress);
+            const transaction = new Transaction();
+            const transferSolInstructions = SystemProgram.transfer({
+              fromPubkey: publicKey,
+              toPubkey: receiver,
+              lamports: LAMPORTS_PER_SOL * transferAmount,
+            });
+            transaction.add(transferSolInstructions);
+            await sendTransaction(transaction, connection)
+              .then((data) => {
+                setExplorerLink(`https://explorer.solana.com/tx/${data}?cluster=devnet`);
+                console.log(explorerLink);
+                setTransferStatus(true);
+              })
+              .catch((err) => {
+                if (err instanceof WalletSendTransactionError) {
+                  alert("Transaction failed");
+                }
+              });
+            setIsLoading(false);
           }
+
+          const destWallet = new PublicKey(receiverAddress);
+          const fromWallet = Keypair.generate();
+          const mint = new PublicKey(selectedAcc.mint ?? "");
+          const sourceAccount = await getOrCreateAssociatedTokenAccount(connection, fromWallet, mint, publicKey!!);
+
+          try {
+            const destinationAccount = await getOrCreateAssociatedTokenAccount(connection, fromWallet, mint, destWallet);
+            const transaction = new Transaction();
+            transaction.add(createTransferInstruction(sourceAccount.address, destinationAccount.address, publicKey!!, transferAmount * Math.pow(10, selectedAcc.decimalPlaces ?? 0)));
+            await sendTransaction(transaction, connection).then((data) => {
+              setExplorerLink(`https://explorer.solana.com/tx/${data}?cluster=devnet`);
+              console.log(explorerLink);
+              setTransferStatus(true);
+            });
+          } catch (err) {
+            if (err instanceof TokenAccountNotFoundError) {
+              console.log("from TokenAccountNotFoundError");
+              setAtaStatus("INITIALIZED");
+            }
+          }
+          setIsLoading(false);
         }
-      }
-    } catch(err) {
-      if (err instanceof WalletSendTransactionError) {
-        console.log("Transaction failed");
+      } catch (err) {
+        if (err instanceof WalletSendTransactionError) {
+          console.log("Transaction failed");
+        }
       }
     }
   }
 
+  function handleClose() {
+    setTimeout(() => {
+      setAtaStatus("NOT_INITIALIZED");
+    }, 200);
+    setIsLoading(false);
+  }
+
+  async function handleCreateAssociatedTokenAcc() {
+    setTimeout(() => {
+      setAtaStatus("PENDING");
+    }, 200);
+    setIsLoading(true);
+    const destPublicKey = new PublicKey(receiverAddress);
+    const mintPublicKey = new PublicKey(selectedAcc.mint ?? "");
+
+    const associatedTokenAddress = await getAssociatedTokenAddress(mintPublicKey, destPublicKey, false);
+    const transaction = new Transaction();
+    transaction.add(createAssociatedTokenAccountInstruction(publicKey!!, associatedTokenAddress, destPublicKey, mintPublicKey));
+    await sendTransaction(transaction, connection).then((data) => {
+      setAtaStatus("SUCCESS");
+      setExplorerLink(`https://explorer.solana.com/tx/${data}?cluster=devnet`);
+    });
+    setIsLoading(false);
+  }
+
   return (
-    <div className="h-screen bg-background flex flex-col pt-24 items-center">
+    <div className="h-screen w-full absolute pt-40 bg-background flex flex-col items-center">
       <p className="text-highlight text-2xl">Transfer tokens fast and secure.</p>
       <form className="flex flex-col mt-12">
         <div className="grid mb-3">
@@ -209,30 +277,32 @@ export default function AccountInfo() {
           Available Balance: {selectedAcc.balance ? `${selectedAcc.balance}` : "0"} {selectedAcc.symbol && `${selectedAcc.symbol}`}
         </p>
         <div className="grid mb-3">
-          <label htmlFor="amountSelect" className="text-teal-50 mb-2">
-            Enter Amount:
+          <label htmlFor="amountSelect" className="text-teal-50 mb-2 flex">
+            Enter Amount: {!isValidAmount && <p className="ml-20 text-red-600">Invalid amount</p>}
           </label>
           <input
             type="number"
             name="amountSelect"
-            className="w-80 h-10 pl-[0.6rem] rounded outline-background"
+            className={`w-80 h-10 pl-[0.6rem] rounded outline-background ${!isValidAmount && "border-2 border-red-600"}`}
             value={transferAmount}
+            disabled={isLoading}
             onChange={(e) => {
               setIsValidAmount(true);
-              setTransferAmount(parseInt(e.target.value));
+              setTransferAmount(parseFloat(e.target.value));
             }}
           />
         </div>
         <div className="grid mb-3">
-          <label htmlFor="amountSelect" className="text-teal-50 mb-2">
-            Enter Receiver Address:
+          <label htmlFor="receiverSelect" className="text-teal-50 mb-2 flex">
+            Enter Receiver Address: {!isValidAddress && <p className="ml-4 text-red-600">Invalid address</p>}
           </label>
           <input
             type="text"
-            name="amountSelect"
-            className="w-80 h-10 pl-[0.6rem] rounded outline-background"
+            name="receiverSelect"
+            className={`w-80 h-10 pl-[0.6rem] rounded outline-background ${!isValidAddress && "border-2 border-red-600"}`}
             placeholder="Receiver Address"
             value={receiverAddress}
+            disabled={isLoading}
             onChange={(e) => {
               setReceiverAddress(e.target.value);
             }}
@@ -240,7 +310,8 @@ export default function AccountInfo() {
         </div>
         <button
           type="button"
-          className="w-80 h-10 mt-2 rounded border transition-all hover:bg-highlighthover hover:border-highlightdarker border-transparent text-navtext bg-highlight"
+          className="w-80 h-10 mt-10 rounded border transition-all hover:bg-highlighthover hover:border-highlightdarker border-transparent text-navtext bg-highlight"
+          disabled={isLoading}
           onClick={(e) => {
             e.preventDefault();
             handleTransfer();
@@ -248,6 +319,34 @@ export default function AccountInfo() {
         >
           Transfer
         </button>
+        {isLoading && <div className="mt-8 text-xl text-center text-teal-50">Waiting...</div>}
+        {ataStatus === "INITIALIZED" && <TokenAccCreateModal handleCreateAssociatedTokenAcc={handleCreateAssociatedTokenAcc} receiverAddress={receiverAddress} handleClose={handleClose} />}
+        {ataStatus === "SUCCESS" && (
+          <TokenTransferModal
+            explorerLink={explorerLink}
+            receiverAddress={receiverAddress}
+            handleTransfer={() => {
+              setTimeout(() => {
+                setAtaStatus("COMPLETED");
+              }, 200);
+              handleTransfer();
+            }}
+            handleClose={handleClose}
+          />
+        )}
+        {transferStatus && (
+          <TransferSuccess
+            explorerLink={explorerLink}
+            receiverAddress={receiverAddress}
+            handleClose={() => {
+              setTimeout(() => {
+                setTransferStatus(false);
+              }, 200);
+            }}
+            amount={transferAmount}
+            tokenSymbol={selectedAcc.symbol ?? ""}
+          />
+        )}
       </form>
     </div>
   );
